@@ -119,3 +119,388 @@ html,body{width:100%;height:100%;overflow:hidden;user-select:none;background:#1a
 
 /* ── BOTTOM: FLAG MODE ── */
 #bot{
+  flex-shrink:0;width:100%;display:flex;align-items:center;justify-content:space-between;
+  padding:6px 12px;background:rgba(20,14,8,0.98);border-top:1px solid rgba(201,147,44,0.15);
+  gap:8px;
+}
+#flagToggle{
+  flex:1;padding:8px;border-radius:10px;cursor:pointer;
+  font-size:10px;font-weight:700;font-family:Georgia,serif;letter-spacing:1px;
+  border:2px solid rgba(232,184,75,0.35);background:rgba(232,184,75,0.07);
+  color:rgba(232,184,75,0.65);transition:all 0.12s;
+}
+#flagToggle.active{
+  background:rgba(232,184,75,0.22);border-color:rgba(232,184,75,0.75);color:#e8b84b;
+  box-shadow:0 0 12px rgba(232,184,75,0.28);
+}
+#flagToggle:active{transform:scale(0.96);}
+.hint-text{font-size:8px;color:rgba(232,220,196,0.3);font-family:'Trebuchet MS',sans-serif;text-align:center;flex:1;}
+
+/* ── OVERLAY ── */
+#overlay{
+  display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(15,10,5,0.9);backdrop-filter:blur(8px);
+  align-items:center;justify-content:center;flex-direction:column;gap:14px;
+}
+#overlay.show{display:flex;}
+.ov-icon{font-size:clamp(40px,12vw,64px);color:#e8dcc4;}
+.ov-title{font-size:clamp(18px,5vw,30px);font-weight:900;font-family:Georgia,serif;text-align:center;}
+.ov-sub{font-size:clamp(11px,3vw,16px);color:rgba(232,220,196,0.55);font-family:'Trebuchet MS',sans-serif;}
+.ov-stats{font-size:clamp(11px,3vw,15px);color:#e8b84b;font-family:Georgia,serif;}
+.ov-btn{
+  padding:12px 32px;border-radius:14px;cursor:pointer;font-size:13px;font-weight:900;
+  font-family:Georgia,serif;border:none;letter-spacing:1px;
+  transition:transform 0.1s;
+}
+.ov-btn:active{transform:scale(0.95);}
+.ov-btn.win{background:linear-gradient(135deg,#c9932c,#8a6318);color:#1a120b;box-shadow:0 0 20px rgba(201,147,44,0.4);}
+.ov-btn.lose{background:linear-gradient(135deg,#c76a3e,#7a3018);color:#fff;box-shadow:0 0 20px rgba(199,106,62,0.4);}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <div class="counter" id="trapCount"><span class="lbl">TRAMPAS</span>0</div>
+    <button id="resetBtn">⛏</button>
+    <div class="timer-box" id="timerEl"><span class="lbl">TIEMPO</span>000</div>
+  </div>
+  <div id="diff-row">
+    <button class="dbtn active" data-diff="easy">FÁCIL<br><span style="font-size:7px;opacity:0.7">9×9 · 11 trampas</span></button>
+    <button class="dbtn" data-diff="medium">MEDIO<br><span style="font-size:7px;opacity:0.7">16×16 · 42 trampas</span></button>
+    <button class="dbtn" data-diff="hard">DIFÍCIL<br><span style="font-size:7px;opacity:0.7">16×30 · 105 trampas</span></button>
+  </div>
+  <div id="board-wrap">
+    <div id="board"></div>
+  </div>
+  <div id="bot">
+    <button id="flagToggle">⚑ SEÑALAR TRAMPA</button>
+    <div class="hint-text">TOCA = excavar<br>SEÑAL = marcar trampa</div>
+  </div>
+</div>
+
+<div id="overlay">
+  <div class="ov-icon" id="ovIcon"></div>
+  <div class="ov-title" id="ovTitle"></div>
+  <div class="ov-sub"   id="ovSub"></div>
+  <div class="ov-stats" id="ovStats"></div>
+  <button class="ov-btn" id="ovBtn">EXCAVAR DE NUEVO</button>
+</div>
+
+<script>
+// ── DIFICULTADES ─────────────────────────────────────────
+const DIFFS = {
+  easy:   { rows:9,  cols:9,  traps:11 },
+  medium: { rows:16, cols:16, traps:42 },
+  hard:   { rows:16, cols:30, traps:105 },
+};
+
+let diff='easy', cfg=DIFFS.easy;
+let grid=[], rows, cols, traps;
+let gameState='idle'; // idle|playing|won|lost
+let flagMode=false;
+let timerInterval=null, seconds=0;
+let firstClick=true;
+let cellSize=32;
+
+// ── LAYOUT ───────────────────────────────────────────────
+const boardEl = document.getElementById('board');
+const boardWrap = document.getElementById('board-wrap');
+
+function calcCellSize(){
+  const avW = boardWrap.clientWidth  - 24;
+  const avH = boardWrap.clientHeight - 24;
+  const sz  = Math.floor(Math.min(avW/cfg.cols, avH/cfg.rows));
+  cellSize  = Math.max(18, Math.min(sz, 44));
+}
+
+// ── INIT ─────────────────────────────────────────────────
+function initGame(){
+  cfg = DIFFS[diff];
+  rows=cfg.rows; cols=cfg.cols; traps=cfg.traps;
+  calcCellSize();
+  gameState='idle'; firstClick=true; flagMode=false;
+  seconds=0; stopTimer();
+  updateTrapCount(traps);
+  updateTimer(0);
+  updateResetBtn('⛏');
+  document.getElementById('flagToggle').classList.remove('active');
+  buildGrid();
+  buildDOM();
+  document.getElementById('overlay').classList.remove('show');
+}
+
+function buildGrid(){
+  grid=[];
+  for(let r=0;r<rows;r++){
+    grid[r]=[];
+    for(let c=0;c<cols;c++){
+      grid[r][c]={trap:false,revealed:false,flagged:false,count:0};
+    }
+  }
+}
+
+function placeTraps(safeR, safeC){
+  let placed=0;
+  while(placed<traps){
+    const r=Math.floor(Math.random()*rows);
+    const c=Math.floor(Math.random()*cols);
+    if(grid[r][c].trap) continue;
+    // No colocar cerca del primer punto excavado (zona 3x3 segura)
+    if(Math.abs(r-safeR)<=1 && Math.abs(c-safeC)<=1) continue;
+    grid[r][c].trap=true; placed++;
+  }
+  // Calcular conteo de trampas vecinas
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    if(grid[r][c].trap) continue;
+    let cnt=0;
+    forNeighbors(r,c,(nr,nc)=>{ if(grid[nr][nc].trap) cnt++; });
+    grid[r][c].count=cnt;
+  }
+}
+
+function forNeighbors(r,c,fn){
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+    if(dr===0&&dc===0) continue;
+    const nr=r+dr, nc=c+dc;
+    if(nr>=0&&nr<rows&&nc>=0&&nc<cols) fn(nr,nc);
+  }
+}
+
+// ── CONSTRUCCIÓN DEL TABLERO ──────────────────────────────
+function buildDOM(){
+  boardEl.style.gridTemplateColumns=`repeat(${cols},${cellSize}px)`;
+  boardEl.style.gridTemplateRows   =`repeat(${rows},${cellSize}px)`;
+  boardEl.innerHTML='';
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const d=document.createElement('div');
+    d.className='cell hidden';
+    d.style.width=cellSize+'px'; d.style.height=cellSize+'px';
+    d.style.fontSize=Math.max(10,cellSize*0.48)+'px';
+    d.dataset.r=r; d.dataset.c=c;
+    d.addEventListener('click', onCellClick);
+    d.addEventListener('contextmenu', e=>{ e.preventDefault(); onCellRight(r,c); });
+    // Long-press para marcar en móvil
+    let lpt=null;
+    d.addEventListener('touchstart',e=>{
+      lpt=setTimeout(()=>{ lpt=null; onCellRight(r,c); },400);
+    },{passive:true});
+    d.addEventListener('touchend', ()=>{ if(lpt){clearTimeout(lpt);lpt=null;} });
+    d.addEventListener('touchmove',()=>{ if(lpt){clearTimeout(lpt);lpt=null;} });
+    boardEl.appendChild(d);
+  }
+}
+
+function getCell(r,c){ return boardEl.children[r*cols+c]; }
+
+// ── INTERACCIÓN ──────────────────────────────────────────
+function onCellClick(e){
+  const r=parseInt(this.dataset.r), c=parseInt(this.dataset.c);
+  if(flagMode){ onCellRight(r,c); return; }
+  if(gameState==='won'||gameState==='lost') return;
+  if(grid[r][c].flagged||grid[r][c].revealed) return;
+  if(firstClick){
+    firstClick=false;
+    placeTraps(r,c);
+    startTimer();
+    gameState='playing';
+  }
+  reveal(r,c);
+}
+
+function onCellRight(r,c){
+  if(gameState==='won'||gameState==='lost') return;
+  if(grid[r][c].revealed) return;
+  grid[r][c].flagged=!grid[r][c].flagged;
+  const d=getCell(r,c);
+  if(grid[r][c].flagged){
+    d.classList.add('flagged');
+    d.textContent='⚑';
+    d.style.fontSize=Math.max(10,cellSize*0.52)+'px';
+  } else {
+    d.classList.remove('flagged');
+    d.textContent='';
+  }
+  // Actualizar contador de trampas
+  const flagCount=grid.flat().filter(c=>c.flagged).length;
+  updateTrapCount(traps-flagCount);
+}
+
+// ── LÓGICA DE EXCAVACIÓN ──────────────────────────────────
+function reveal(r,c){
+  if(r<0||r>=rows||c<0||c>=cols) return;
+  const cell=grid[r][c];
+  if(cell.revealed||cell.flagged) return;
+  cell.revealed=true;
+  const d=getCell(r,c);
+
+  if(cell.trap){
+    // TRAMPA ACTIVADA
+    d.className='cell trap-hit';
+    d.textContent='✕';
+    d.style.fontSize=Math.max(12,cellSize*0.6)+'px';
+    gameOver();
+    return;
+  }
+
+  d.classList.remove('hidden');
+  d.classList.add('revealed','reveal-anim');
+  setTimeout(()=>d.classList.remove('reveal-anim'),200);
+
+  if(cell.count>0){
+    d.textContent=cell.count;
+    d.classList.add('n'+cell.count);
+  } else {
+    // Excavación en cascada — revela vecinos con avance escalonado
+    floodReveal(r,c);
+  }
+  checkWin();
+}
+
+function floodReveal(startR,startC){
+  // BFS con ligero escalonamiento para efecto visual
+  const queue=[[startR,startC,0]];
+  const visited=new Set();
+  visited.add(`${startR},${startC}`);
+  let idx=0;
+  function step(){
+    const batch=[];
+    while(idx<queue.length){
+      const [r,c,depth]=queue[idx++];
+      batch.push([r,c,depth]);
+      if(batch.length>=12) break;
+    }
+    batch.forEach(([r,c,depth])=>{
+      forNeighbors(r,c,(nr,nc)=>{
+        const key=`${nr},${nc}`;
+        if(visited.has(key)) return;
+        const cell=grid[nr][nc];
+        if(cell.revealed||cell.flagged||cell.trap) return;
+        visited.add(key);
+        cell.revealed=true;
+        const d=getCell(nr,nc);
+        d.classList.remove('hidden');
+        d.classList.add('revealed','reveal-anim');
+        setTimeout(()=>d.classList.remove('reveal-anim'),200);
+        if(cell.count>0){
+          d.textContent=cell.count;
+          d.classList.add('n'+cell.count);
+        } else {
+          queue.push([nr,nc,depth+1]);
+        }
+      });
+    });
+    if(idx<queue.length) setTimeout(step, 18);
+    else checkWin();
+  }
+  step();
+}
+
+// ── VICTORIA / DERROTA ────────────────────────────────────
+function gameOver(){
+  gameState='lost'; stopTimer();
+  updateResetBtn('✕');
+  // Revelar todas las trampas restantes con avance escalonado
+  const trapList=[];
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(grid[r][c].trap&&!grid[r][c].flagged) trapList.push([r,c]);
+  trapList.sort(()=>Math.random()-0.5);
+  trapList.forEach(([r,c],i)=>{
+    setTimeout(()=>{
+      const d=getCell(r,c);
+      if(!d.classList.contains('trap-hit')){
+        d.className='cell trap-show';
+        d.textContent='◆';
+        d.style.fontSize=Math.max(10,cellSize*0.52)+'px';
+      }
+    }, i*40+300);
+  });
+  setTimeout(()=>{
+    document.getElementById('ovIcon').textContent='✕';
+    document.getElementById('ovTitle').textContent='TRAMPA ACTIVADA';
+    document.getElementById('ovTitle').style.color='#c76a3e';
+    document.getElementById('ovSub').textContent='La excavación se detuvo aquí';
+    document.getElementById('ovStats').textContent=`⏱ ${formatTime(seconds)}  ◆ ${traps} trampas`;
+    document.getElementById('ovBtn').className='ov-btn lose';
+    document.getElementById('overlay').classList.add('show');
+  }, trapList.length*40+600);
+}
+
+function checkWin(){
+  const unrevealed=grid.flat().filter(c=>!c.revealed).length;
+  if(unrevealed===traps){
+    gameState='won'; stopTimer();
+    updateResetBtn('✓');
+    // Señalizar todas las trampas restantes
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      if(grid[r][c].trap&&!grid[r][c].flagged){
+        grid[r][c].flagged=true;
+        const d=getCell(r,c);
+        d.classList.add('flagged'); d.textContent='⚑';
+        d.style.fontSize=Math.max(10,cellSize*0.52)+'px';
+      }
+    }
+    updateTrapCount(0);
+    setTimeout(()=>{
+      const best=getBest();
+      document.getElementById('ovIcon').textContent='✓';
+      document.getElementById('ovTitle').textContent='SITIO COMPLETADO';
+      document.getElementById('ovTitle').style.color='#7c9a5b';
+      document.getElementById('ovSub').textContent=diff==='easy'?'Excavación fácil completada':diff==='medium'?'¡Buen trabajo de campo!':'¡Un maestro de la excavación!';
+      const rec = seconds<(best||9999) ? ' ✦ NUEVO RÉCORD' : '';
+      document.getElementById('ovStats').textContent=`⏱ ${formatTime(seconds)}${rec}`;
+      document.getElementById('ovBtn').className='ov-btn win';
+      document.getElementById('overlay').classList.add('show');
+      saveBest(seconds);
+    }, 400);
+  }
+}
+
+// ── TEMPORIZADOR ─────────────────────────────────────────
+function startTimer(){ timerInterval=setInterval(()=>{ seconds++; updateTimer(seconds); },1000); }
+function stopTimer(){  clearInterval(timerInterval); timerInterval=null; }
+function updateTimer(s){ document.getElementById('timerEl').innerHTML='<span class="lbl">TIEMPO</span>'+String(Math.min(s,999)).padStart(3,'0'); }
+function formatTime(s){ return s<60?s+'s':`${Math.floor(s/60)}m${s%60}s`; }
+
+// ── MEJOR TIEMPO ─────────────────────────────────────────
+function getBest(){ return parseInt(localStorage.getItem('dig_best_'+diff)||'0')||null; }
+function saveBest(s){ const b=getBest(); if(!b||s<b) localStorage.setItem('dig_best_'+diff,s); }
+
+// ── HUD ──────────────────────────────────────────────────
+function updateTrapCount(n){
+  document.getElementById('trapCount').innerHTML='<span class="lbl">TRAMPAS</span>'+String(Math.max(0,n)).padStart(2,'0');
+}
+function updateResetBtn(e){ document.getElementById('resetBtn').textContent=e; }
+
+// ── CONTROLES ────────────────────────────────────────────
+document.getElementById('resetBtn').addEventListener('click',()=>initGame());
+document.getElementById('ovBtn').addEventListener('click',()=>initGame());
+document.getElementById('flagToggle').addEventListener('click',()=>{
+  flagMode=!flagMode;
+  document.getElementById('flagToggle').classList.toggle('active',flagMode);
+  document.getElementById('flagToggle').textContent=flagMode?'⚑ SEÑALANDO':'⚑ SEÑALAR TRAMPA';
+  updateResetBtn(flagMode?'⚑':'⛏');
+});
+document.querySelectorAll('.dbtn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    diff=b.dataset.diff;
+    document.querySelectorAll('.dbtn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    initGame();
+  });
+});
+
+// ── INICIALIZACIÓN INMEDIATA ──────────────────────────────
+// El script se ejecuta al final del <body>, así que el DOM y el layout
+// ya existen: inicializamos de inmediato en vez de depender únicamente
+// del evento 'load', que en algunos contextos (iframes, ciertos navegadores,
+// pestañas nuevas con carga particular) puede no llegar a tiempo o nunca
+// dispararse — dejando el tablero sin construir.
+initGame();
+
+// Redes de seguridad adicionales por si el contenedor aún no tenía
+// su tamaño final en el primer frame de render.
+window.addEventListener('load', ()=>{ calcCellSize(); buildDOM(); });
+window.addEventListener('resize', ()=>{ calcCellSize(); buildDOM(); });
+setTimeout(()=>{ calcCellSize(); buildDOM(); }, 300);
+</script>
+</body>
+</html>
